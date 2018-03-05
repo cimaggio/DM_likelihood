@@ -4,21 +4,28 @@ import sys
 sys.path.append('/media/san/astro/soft/root/root_v5.34.36/root/lib')
 import ROOT
 import numpy as np
-import scipy as sp
+#import scipy as sp
+#from scipy.interpolate import interp1d
+from scipy.integrate import quad
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 import math
+from tqdm import tqdm 
+import config
 from scipy.optimize import minimize
+from cuts import pass_energy_cuts
+#from num_integration import DGauss
+#from mpmath import dps
 
 from ROOT import TString, TFile, TObject, TH1, TMath, TNtuple, TCanvas 
 from array import array
 #from ROOT import *   (this command line does not work in a script)
 
 # all global parameters here
-numtot = 0
 content = 0
-ene = np.empty(shape=(540000),dtype='double')
-enest = []
+ene_on = []
+integrand = []
+integrand_norm = []
 logenergy = []
 pEnBiasVsEnEst = []
 pEnBiasVsEnEst2 = []
@@ -28,31 +35,47 @@ hEnPartVsEnEst = []
 hEnMinVsEnEst = []
 hEnMaxVsEnEst = []
 nbinsenest = []
-est_en_edges = np.empty(shape=(2, 17), dtype='double')
+numsamples   = config.nsamples
+numenergies  = config.energy_numbins
+est_en_edges = np.empty(shape=(numsamples, numenergies), dtype='double')
+
+penbias  = np.empty(shape=(numsamples, numenergies), dtype='double')
+penbias2 = np.empty(shape=(numsamples, numenergies), dtype='double')
+henres   = np.empty(shape=(numsamples, numenergies), dtype='double')
+henres2  = np.empty(shape=(numsamples, numenergies), dtype='double')
+henpart  = np.empty(shape=(numsamples, numenergies), dtype='double')
+
+normon   = np.empty(numsamples, dtype='double') # content after applying the ON-boundaries in energy
+
+
+inter_mean1  = []
+inter_mean2  = []
+inter_sigma1 = []
+inter_sigma2 = []
+inter_part   = []
+enmig        = []
+
+mean1 = []
+mean2 = []
+sigma1= []
+sigma2= []
+part  = []
+
+numtoton = np.empty(numsamples, dtype='int')    # total number of events in ON sample (one for each period)
 
 sEffArea  = []
 sEffAreaErec = []
 AeffEnMax = []
 
-# all cuts here
-energy_cut = 50    # GeV
-energy_upper_cut = 8000    # GeV
-
-PrelimPath="/media/san2/astro/M15/extractaeff/effective_areaweighted_0.0_flute_full.root"
-Dir06="/media/san2/astro/M15/st0306/flute_Idx0/Samples.root"
-Dir07="/media/san2/astro/M15/st0307/flute_Idx0/Output_glike.root" #this file does not exist!!! 
-
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def Init():
+def OnInit(PrelimPath,OnDir,EffOnTime):
 
 #    NumBckgEnBins = 40
-    print("\n\n--- INITIALIZING VALUES from:", PrelimPath, "\n")
+    print("\n\n--- INITIALIZING VALUES from:", PrelimPath, " eff. on time: ", EffOnTime[0], "\n")
 
     # TFile *LivParamFile  = TFile.Open(PrelimPath, "READ")
     LivParamFile2 = TFile.Open(PrelimPath, "READ")
-
-    SampleName = ["0306", "0307"]
 
     global pEnBiasVsEnEst
     global pEnBiasVsEnEst2
@@ -66,28 +89,43 @@ def Init():
     global sEffArea 
     global sEffAreaErec
     global AeffEnMax
-    
 
-    for k in range (0, 2):    # k= number of samples
+    global penbias
+    global penbias2
+    global henres
+    global henres2
+    global henpart
 
-        pEnBiasVsEnEst.append(LivParamFile2.FindObjectAny(ROOT.Form("pEnBiasVsEnEst__%s_smoothed" % SampleName[k])))
+    global inter_mean1
+    global inter_mean2
+    global inter_sigma1
+    global inter_sigma2
+    global inter_part
+
+    global ene_on
+    global integrand
+    global normon
+
+    for k in range (0, config.nsamples):    # k= number of samples
+
+        pEnBiasVsEnEst.append(LivParamFile2.FindObjectAny(ROOT.Form("pEnBiasVsEnEst__%s_smoothed" % config.SampleName[k])))
         pEnBiasVsEnEst[k].SetDirectory(0)        
 
-        pEnBiasVsEnEst2.append(LivParamFile2.FindObjectAny(ROOT.Form("pEnBiasVsEnEst2__%s_smoothed" % SampleName[k])))
+        pEnBiasVsEnEst2.append(LivParamFile2.FindObjectAny(ROOT.Form("pEnBiasVsEnEst2__%s_smoothed" % config.SampleName[k])))
         pEnBiasVsEnEst2[k].SetDirectory(0)        
 
-        hEnResVsEnEst.append(LivParamFile2.FindObjectAny(ROOT.Form("hEnResVsEnEst__%s_smoothed" % SampleName[k])))
+        hEnResVsEnEst.append(LivParamFile2.FindObjectAny(ROOT.Form("hEnResVsEnEst__%s_smoothed" % config.SampleName[k])))
         hEnResVsEnEst[k].SetDirectory(0)        
 
-        hEnResVsEnEst2.append(LivParamFile2.FindObjectAny(ROOT.Form("hEnResVsEnEst2__%s_smoothed" % SampleName[k])))
+        hEnResVsEnEst2.append(LivParamFile2.FindObjectAny(ROOT.Form("hEnResVsEnEst2__%s_smoothed" % config.SampleName[k])))
         hEnResVsEnEst2[k].SetDirectory(0)        
 
-        hEnPartVsEnEst.append(LivParamFile2.FindObjectAny(ROOT.Form("hEnPartVsEnEst__%s_smoothed" % SampleName[k])))
+        hEnPartVsEnEst.append(LivParamFile2.FindObjectAny(ROOT.Form("hEnPartVsEnEst__%s_smoothed" % config.SampleName[k])))
         hEnPartVsEnEst[k].SetDirectory(0)       
  
         nbinsenest.append(pEnBiasVsEnEst[k].GetNbinsX())
 
-        print("Est Energy Edges for period st%s" % SampleName[k], "\n")
+        print("Est Energy Edges for period st%s" % config.SampleName[k], "\n")
 
         print ("nbinsenest =", nbinsenest[k], "\n")
 
@@ -97,14 +135,158 @@ def Init():
         
         print ("\n")
 
-        sEffArea.append(LivParamFile2.FindObjectAny(ROOT.Form("sEffArea__%s" % SampleName[k])))
-        sEffAreaErec.append(LivParamFile2.FindObjectAny(ROOT.Form("sEffAreaErec__%s" % SampleName[k])))
+        sEffArea.append(LivParamFile2.FindObjectAny(ROOT.Form("sEffArea__%s" % config.SampleName[k])))
+        sEffAreaErec.append(LivParamFile2.FindObjectAny(ROOT.Form("sEffAreaErec__%s" % config.SampleName[k])))
         
 
         AeffEnMax.append(sEffArea[k].GetXmax())
 
     LivParamFile2.Close()
     LivParamFile2.Delete()
+
+
+    for k in range (0, config.nsamples):    # k= number of samples    
+
+        print (OnDir[k])
+
+        file        = TFile.Open(OnDir[k], "READ")
+        ntuple      = file.Get("fOnSample")
+        numtoton[k] = ntuple.GetEntries()
+
+        ene_on.append(np.empty(shape=(config.EvtMaxOn),dtype=config.ArrayDataType))
+
+        num = 0
+        for i in range (0, numtoton[k]):
+            ntuple.GetEntry(i)
+            energy = ntuple.GetArgs()[0]
+
+            if (not pass_energy_cuts(energy)):
+                continue               
+
+            ene_on[k][num] = energy
+            num += 1
+                
+        numtoton[k] = num
+        ene_on[k] = np.resize(ene_on[k],num)
+
+        print ('The number of on entries (after energy cuts) is:', num)
+        print (ene_on[k])
+        print ('The sum of ', np.sum(ene_on[k]))
+
+        for i in range (0, nbinsenest[k]):
+
+            penbias[k][i]  = pEnBiasVsEnEst[k].GetBinContent(i+1)
+            penbias2[k][i] = pEnBiasVsEnEst2[k].GetBinContent(i+1)
+            henres[k][i]   = hEnResVsEnEst[k].GetBinContent(i+1)
+            henres2[k][i]  = hEnResVsEnEst2[k].GetBinContent(i+1)
+            henpart[k][i]  = hEnPartVsEnEst[k].GetBinContent(i+1) 
+
+
+        inter_mean1.append(interp1d(est_en_edges[k], penbias[k], kind='linear'))
+        inter_mean2.append(interp1d(est_en_edges[k], penbias2[k], kind='linear'))
+        inter_sigma1.append(interp1d(est_en_edges[k], henres[k], kind='linear'))
+        inter_sigma2.append(interp1d(est_en_edges[k], henres2[k], kind='linear'))
+        inter_part.append(interp1d(est_en_edges[k], henpart[k], kind='linear'))
+            
+#        mean1.append(np.empty(shape=(num),dtype='double'))
+#        mean2.append(np.empty(shape=(num),dtype='double'))
+#        sigma1.append(np.empty(shape=(num),dtype='double'))
+#        sigma2.append(np.empty(shape=(num),dtype='double'))
+#        part.append(np.empty(shape=(num),dtype='double'))
+
+#        mean1[k] = ene_on[k] - inter_mean1[k](ene_on[k])*ene_on[k]  #  pEnBiasVsEnEst = ( E' - E ) / E'
+#        mean2[k] = ene_on[k] - inter_mean1[k](ene_on[k])*ene_on[k]  #  pEnBiasVsEnEst = ( E' - E ) / E'
+#        sigma1[k] = inter_sigma1[k](ene_on[k])*ene_on[k]
+#        sigma2[k] = inter_sigma2[k](ene_on[k])*ene_on[k]
+#        part[k]   = inter_part[k](ene_on[k])
+
+        integrand.append(np.empty(shape=(num,config.BinsIntegrand),dtype=config.ArrayDataType))
+
+        pbar = tqdm(total=num*config.BinsIntegrand)
+
+        for i in range (0, num):
+
+            energy = ene_on[k][i]
+
+            mean1 = energy - inter_mean1[k](energy)*energy   #  pEnBiasVsEnEst = ( E' - E ) / E'
+            mean2 =  energy - inter_mean1[k](energy)*energy  #  pEnBiasVsEnEst = ( E' - E ) / E'
+            sigma1 = inter_sigma1[k](energy)*energy
+            sigma2 = inter_sigma2[k](energy)*energy
+            part = inter_part[k](energy)
+
+            # define the integration limits for true energy
+            lowl  = mean2 - config.SigmaLimits * sigma2
+            highl = mean2 + config.SigmaLimits * sigma2
+            if (lowl < config.energy_absmin):
+                lowl = config.energy_absmin
+
+            # define the bins in true energy
+            binwidth = (highl - lowl) / config.BinsIntegrand
+
+            for j in range(0,config.BinsIntegrand):
+                
+                entrue = lowl + (j+0.5)*binwidth
+
+                pbar.update(1)
+
+                area = get_area(entrue,k)
+                flux = get_phi(entrue)
+                enmig = part*gaussian(entrue,mean1,sigma1)+(1.-part)*gaussian(entrue,mean2,sigma2)
+            
+                integrand[k][i][j] = flux * area * enmig * EffOnTime[k] * binwidth
+
+        pbar.close()
+
+        print ("Starting Normalization\n")
+
+        integrand_norm.append(np.empty(shape=(config.BinsIntegrandNorm,config.BinsIntegrand),dtype=config.ArrayDataType))
+
+        on_en_edges = [] 
+        binsize = TMath.Log(config.energy_upper_cut/config.energy_cut)/config.BinsIntegrandNorm
+
+        for ebin in range (0, config.BinsIntegrandNorm+1):
+            on_en_edges.append(config.energy_cut * TMath.Exp(binsize * ebin))
+
+        for ebin in range (0, config.BinsIntegrandNorm):
+
+            energy = math.sqrt(on_en_edges[ebin+1]*on_en_edges[ebin])
+            
+            mean1  =  energy - inter_mean1[k](energy)*energy   #  pEnBiasVsEnEst = ( E' - E ) / E'
+            mean2  =  energy - inter_mean1[k](energy)*energy  #  pEnBiasVsEnEst = ( E' - E ) / E'
+            sigma1 = inter_sigma1[k](energy)*energy
+            sigma2 = inter_sigma2[k](energy)*energy
+            part   = inter_part[k](energy)
+
+            # define the integration limits for true energy
+            lowl  = mean2 - config.SigmaLimits * sigma2
+            highl = mean2 + config.SigmaLimits * sigma2
+            if (lowl < config.energy_absmin):
+                lowl = config.energy_absmin
+
+            # define the bins in true energy
+            binwidth = (highl - lowl) / config.BinsIntegrand
+
+            for j in range(0,config.BinsIntegrand):
+                
+                entrue = lowl + (j+0.5)*binwidth
+
+                pbar.update(1)
+
+                area = get_area(entrue,k)
+                flux = get_phi(entrue)
+                enmig = part*gaussian(entrue,mean1,sigma1)+(1.-part)*gaussian(entrue,mean2,sigma2)
+            
+                integrand_norm[k][ebin][j] = flux * area * enmig * (on_en_edges[ebin+1]-on_en_edges[ebin]) * EffOnTime[k] 
+
+        normon[k] = np.sum(integrand_norm[k])
+        
+        print ("Normalization=", normon[k])
+
+#        enmig.append(part*gaussian(entrue,mean1,sigma1)+(1.-part)*gaussian(entrue,mean2,sigma2))
+
+#        print ('mean1=', mean1, ' mean2= ', mean2, ' sigma1= ', sigma1, ' sigma2= ', sigma2, ' part=',part)
+
+
 
     print("--- INITIALIZATION FINISHED!\n")
     return;
@@ -113,145 +295,101 @@ def Init():
 def gaussian(x, mu, sigma):
           return 1./sigma/math.sqrt(2*math.pi)*np.exp(-0.5*np.power((x - mu)/sigma, 2.))
 
-def get_area(entrue,k=0):
+
+def get_phi(entrue):
+
+    return config.Phi * (entrue**-5)
+ 
+def get_area(entrue,k):
+
+    global sEffArea
+
     area = sEffArea[k].Eval(math.log10(entrue))
-    print ('log energy: ',math.log10(entrue), 'area: ', area)
+#    print ('log energy: ',math.log10(entrue), 'area: ', area)
     return math.pow(10.,area)
 
-def get_enmigmat(entrue,k=0):
-    DoHisto06 = TFile.Open(Dir06, "READ")
-    non = DoHisto06.Get("fOnSample")
-    numtoton = non.GetEntries()
-    global enest 
+def get_enmigmat(entrue,k,i):
 
-    for i in range (0, numtoton):
-       non.GetEntry(i)
-       enest = non.GetArgs()[0]
-    
-    penbias = np.empty(shape=(nbinsenest[k]))
-    penbias2 = np.empty(shape=(nbinsenest[k]))
-    henres = np.empty(shape=(nbinsenest[k]))
-    henres2 = np.empty(shape=(nbinsenest[k]))
-    henpart = np.empty(shape=(nbinsenest[k]))
+    global enest    
+    global penbias
+    global penbias2
+    global henres
+    global henres2
+    global henpart
+
+    mean10 = ene_on[k][i] - inter_mean1[k](ene_on[k][i])*ene_on[k][i]   #  pEnBiasVsEnEst = ( E' - E ) / E'
+    mean20= ene_on[k][i] - inter_mean1[k](ene_on[k][i])*ene_on[k][i]  #  pEnBiasVsEnEst = ( E' - E ) / E'
+    sigma10 = inter_sigma1[k](ene_on[k][i])*ene_on[k][i]
+    sigma20 = inter_sigma2[k](ene_on[k][i])*ene_on[k][i]
+    part0 = inter_part[k](ene_on[k][i])
+
+#    print ('entrue=', entrue)
+#    print ('mean1=', mean1, ' mean2= ', mean2, ' sigma1= ', sigma1, ' sigma2= ', sigma2, ' part=',part)
  
-    for i in range (0, nbinsenest[k]):
-        penbias[i] = pEnBiasVsEnEst[k].GetBinContent(i+1)
-        penbias2[i] = pEnBiasVsEnEst2[k].GetBinContent(i+1)
-        henres[i] = hEnResVsEnEst[k].GetBinContent(i+1)
-        henres2[i] = hEnResVsEnEst2[k].GetBinContent(i+1)
-        henpart[i] = hEnPartVsEnEst[k].GetBinContent(i+1) 
+    result = part0*gaussian(entrue,mean10,sigma10)+(1.-part0)*gaussian(entrue,mean20,sigma20)
 
-    inter_mean1 = interp1d(est_en_edges[k], penbias, kind='linear')
-    inter_mean2 = interp1d(est_en_edges[k], penbias2, kind='linear')    
-    inter_sigma1 = interp1d(est_en_edges[k], henres, kind='linear')
-    inter_sigma2 = interp1d(est_en_edges[k], henres2, kind='linear')
-    inter_part = interp1d(est_en_edges[k], henpart, kind='linear')
-
-    mean1 = enest - inter_mean1(enest)*enest   #  pEnBiasVsEnEst = ( E' - E ) / E'
-    mean2 = enest - inter_mean1(enest)*enest  #  pEnBiasVsEnEst = ( E' - E ) / E'
-    sigma1 = inter_sigma1(enest)*enest
-    sigma2 = inter_sigma2(enest)*enest
-    part   = inter_part(enest)
-
-    print ('mean1=', mean1, ' mean2= ', mean2, ' sigma1= ', sigma1, ' sigma2= ', sigma2, ' part=',part)
-
-    result = part*gaussian(entrue,mean1,sigma1)+(1.-part)*gaussian(entrue,mean2,sigma2)
+#    print ('result=',result)
 
     return result
 
+
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def DGauss(func, EtMin, EtMax, Eps):
-    """Integral implemented by M.Martinez in a Fortran code. The inputs parameters are: the function that has to be integrated (func), the extremes of the integration range (EtMin, EtMax) and the precision required for the integral (Eps)."""
+#   f(x,k,fi,T):
+
+#   x = np.empty(len(part[k])) 
+#   return fi * T * get_area(x,k) * (part[k]*gaussian(x,mean1[k],sigma1[k])+(1.-part[k])*gaussian(x,mean2[k],sigma2[k]))
+
     
-    W = np.array([0.1012285362903762591525313543,
-                  0.2223810344533744705443559944,
-                  0.3137066458778872873379622020,
-                  0.3626837833783619829651504493,
-                  0.02715245941175409485178057246,
-                  0.06225352393864789286284383699,
-                  0.09515851168249278480992510760,
-                  0.1246289712555338720524762822,
-                  0.1495959888165767320815017305,
-                  0.1691565193950025381893120790,
-                  0.1826034150449235888667636680,
-                  0.1894506104550684962853967232])
 
-    X = np.array([0.9602898564975362316835608686,
-                  0.7966664774136267395915539365,
-                  0.5255324099163289858177390492,
-                  0.1834346424956498049394761424,
-                  0.9894009349916499325961541735,
-                  0.9445750230732325760779884155,
-                  0.8656312023878317438804678977,
-                  0.7554044083550030338951011948,
-                  0.6178762444026437484466717640,
-                  0.4580167776572273863424194430,
-                  0.2816035507792589132304605015,
-                  0.09501250983763744018531933543])
+def get_integral_etrue(entrue, k, fi, T, i):
 
-    dgauss = 0.0
-    
-    if EtMax == EtMin: 
-       return dgauss 
-    else:
-       const = 0.005/(EtMax-EtMin)
-       BB = EtMin  
-       control = 0        
-        
-       while 1:
-          if (control == 0):
-             AA = BB
-             BB = EtMax
-        
-          C1 = 0.05*(BB+AA)
-          C2 = 0.05*(BB-AA)
-          S8 = 0.0
-          S16 = 0.0
+    area = get_area(entrue,k)
+    flux = fi * (entrue**-5)
 
-          for i in range (0, 12):
-           
-             if (i<4):
-                U = C2*X[i]
-                S8 = S8+W[i]*(func(C1+U)+func(C1-U))
-             else:
-                U = C2*X[i]
-                S16 = S16+W[i]*(func(C1+U)+func(C1-U))
-          
-          S8 = C2*S8
-          S16 = C2*S16
-              
-          if (math.fabs(S16-S8)<=Eps*(1.+math.fabs(S16))):
-             dgauss = dgauss+S16
-             if BB != EtMax:
-                control = 0
-                continue
-             else:
-                print('\n')
-                print('The integral is: ', dgauss)
-                break
-          else:
-             BB = C1
-             if (1.+math.fabs(const*C2) != 1.):
-                control = 1
-                continue  #C1
-             else:
-                dgauss = 0.0
-                print('\n')
-                print('The integral is: ', dgauss)
-                break
+    result = fi * T * get_area(entrue,k) #* get_enmigmat(entrue,k,i)
 
+    #get_enmigmat(entrue, k)
+#    print ("rsul=",result)
+    return result
+ 
       
 #-----------------------------------------------------------------------------------------------------------------------------------------
      
 def PdfOnFunc():
-   fi = 47
-   T = 5400   
-   funct = lambda E: fi*(E**-5)*T*get_area(E)*get_enmigmat(E) 
-   pdfon = DGauss(funct, 35, 2000, 0.5)
+   fi = 47.
+   T = 5400.
+   pdfon = 0
+   print ("HERE\n")
+
+#   f = lambda x,kk,ffi,TT: ffi * TT * get_enmigmat(x,kk)
+
+#   print ("TEST: ",np.sum(get_integral_etrue(1000.,0,fi,T)))
+#   print ("TEST1:", get_integral_etrue(1000.,0,fi,T)[0], "\n", get_integral_etrue(1000.,0,fi,T)[1], "\n", get_integral_etrue(1000.,0,fi,T)[2], "\n", get_integral_etrue(1000.,0,fi,T)[3], "\n", get_integral_etrue(1000.,0,fi,T)[4], "\n", )
+#   print ("TEST2: ",[quad(f,35.,2000.,args=(i,0,fi,T,)) for i in range(0,numtoton[0])])
+#   print ("TEST2: ",quad(f,35.,2000.,args=(0,0,fi,T)))
+#   print ("TEST2: ",np.sum(get_integral_etrue(0,fi,T)))
+#   print ("TEST2: ",quad(f,35.,2000.,args=(0,fi,T))[0])
+
+   for k in range (0, 2):   
+#      funct = lambda Etrue: fi*(Etrue**-5)*T*get_area(Etrue,k)*get_enmigmat(Etrue, k) 
+#      pdfon = DGauss(funct, 35, 2000, 0.5)
+#      mp.dps = 15
+       
+       pbar = tqdm(total=numtoton[k])
+       res  = []        
+
+       for i in range (0, numtoton[k]):
+           pbar.update(1)
+#           res = quad(get_integral_etrue,35., 2000.,args=(k,fi,T,i))
+#           pdfon += math.log(quad(get_integral_etrue,35., 2000.,args=(k,fi,T,i))[0])    #it should be a np array of integrals!
+           pdfon +=  math.log(np.sum(integrand[k][i]))
+           
+
+       pbar.close()
    return pdfon
 
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-Init()
-PdfOnFunc()
+#Init()
+#PdfOnFunc()

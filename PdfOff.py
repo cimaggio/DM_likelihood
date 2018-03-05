@@ -4,253 +4,270 @@ import sys
 sys.path.append('/media/san/astro/soft/root/root_v5.34.36/root/lib')
 import ROOT
 import numpy as np
-#print (ROOT.TTimeStamp().AsString())
 import scipy as sp
 from scipy.interpolate import interp1d
+from scipy.integrate import quad
 import matplotlib.pyplot as plt
 import math
+import config
+import time
+from cuts import pass_energy_cuts
 from scipy.optimize import minimize
 
-from ROOT import TString, TFile, TObject, TH1, TMath, TNtuple, TCanvas 
+from ROOT import TFile, TObject, TH1, TMath, TNtuple, TCanvas, TLine, TColor, TPad, TLatex
 from array import array
 #from ROOT import *   (this command line does not work in a script)
 
 # all global parameters here
-numtot = 0
-content = 0
-ene = np.empty(shape=(540000),dtype='double')
-enest = []
-logenergy = []
-pEnBiasVsEnEst = []
-pEnBiasVsEnEst2 = []
-hEnResVsEnEst = []
-hEnResVsEnEst2 = []
-hEnPartVsEnEst = []
-hEnMinVsEnEst = []
-hEnMaxVsEnEst = []
-nbinsenest = []
-est_en_edges = np.empty(shape=(2, 17), dtype='double')
-
-sEffArea  = []
-sEffAreaErec = []
-AeffEnMax = []
-
-# all cuts here
-energy_cut = 50    # GeV
-energy_upper_cut = 8000    # GeV
-
-PrelimPath="/media/san2/astro/M15/extractaeff/effective_areaweighted_0.0_flute_full.root"
-OffDir06="/media/san2/astro/M15/st0306/flute_Idx0/Samples.root"
-OffDir07="/media/san2/astro/M15/st0307/flute_Idx0/Output_glike.root" #this file does not exist!!! 
+numsamples  = config.nsamples
+numtotoff   = np.empty(numsamples, dtype='int')    # total number of events in OFF sample (one for each period)
+normoff     = np.empty(numsamples, dtype='double') # content after applying the ON-boundaries in energy
+log_ene_off = []
+inter_func = []
 
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def isto():
+#
+# this function is deprecated
+#
+def off_energy_distr(OffDir, NumBckgEnBins=40, EnCutHighBG=8000, EnCutLowBG=100):
     """ 
-    this does that:
+    this function does:
+
+    - read the OFF sample input files
+    - 
+
+
     """
 
-    print("\n\n--- INITIALIZING VALUES from:", OffDir06, "\n")
+    global normoff
+    global numtotoff
+    global numsamples
 
-    DoHisto06 = TFile.Open(OffDir06, "READ")
-    DoHisto07 = TFile.Open(OffDir07, "READ")
-    noff = np.array([DoHisto06.Get("fOffSample"), DoHisto07.Get("fOffSample")])
-    global content
-    global numtot
-    Samplename = np.array([6, 7])   
-    for k in range (0,2):
-       numtot = noff[k].GetEntries()
-       print("The total number of entries in the normalization histogram is:", numtot[k])    
+    for k in range (0,numsamples):
 
-       NumBckgEnBins = 40
-       EnCutHighBG = 8000  #55435.5   #to change with the real value #GeV
-       EnCutLowBG = 100  #5.54355 o 300
-       off_en_edges = [] 
+        print("\n\n--- INITIALIZING VALUES from:", OffDir[k], "\n")
+        DoHisto = TFile.Open(OffDir[k], "READ")
+        print(DoHisto)
+
+        noff = np.array([ DoHisto.Get("fOffSample") ])
+
+        numtotoff[k] = noff[0].GetEntries()
+        print("The total number of entries in the normalization histogram is:", numtotoff[k])    
         
-       binsize = TMath.Log(EnCutHighBG/EnCutLowBG)/NumBckgEnBins    
+        off_en_edges = [] 
+        binsize = TMath.Log(EnCutHighBG/EnCutLowBG)/config.NumBckgEnBins    
 
-       for ebin in range (0, NumBckgEnBins+1):
-          off_en_edges.append(EnCutLowBG * TMath.Exp(binsize * ebin))
+        for ebin in range (0, config.NumBckgEnBins+1):
+            off_en_edges.append(EnCutLowBG * TMath.Exp(binsize * ebin))
 
-       offbins = array('d',off_en_edges)    
+        # create here offbins with the (larger) background limits
+        offbins = array('d',off_en_edges)    
 
-       isto = ROOT.TH1F("integral", "integral", NumBckgEnBins, offbins)  
+        isto = ROOT.TH1F("integral", "integral", config.NumBckgEnBins, offbins)  
 
-       for i in range (0, numtot[k]):
-          noff[k].GetEntry(i)
-          energy = noff[k].GetArgs()[0]
-          isto.Fill(energy[k])
+        for i in range (0, numtotoff[k]):
+            noff[0].GetEntry(i)
+            energy = noff[0].GetArgs()[0]
+            isto.Fill(energy)
 
-       f = TFile("normalization_histogram_st030 %d .root", Samplename[k], "RECREATE")
-       gramma = TCanvas("EOff_Histogram", "EOFF_Histogram")
-       gramma.SetCanvasSize(800, 800)
-       gramma.SetWindowSize(1000, 1000)
-       gramma.SetLogx()
-       gramma.SetLogy()
-       isto[k].SetXTitle("Log Eest")
-       isto[k].SetYTitle("Log events")
-       isto[k].Draw()
-       gramma.Write()
-       f.Close()
+        f = TFile('normalization_histogram_sample_{}.root'.format(k), "RECREATE")
+        gramma = TCanvas("EOff_Histogram", 'EOFF_Histogram sample {}'.format(k))
+        gramma.SetCanvasSize(800, 800)
+        gramma.SetWindowSize(1000, 1000)
+        gramma.SetLogx()
+        gramma.SetLogy()
+        isto.SetXTitle("Log Eest")
+        isto.SetYTitle("Log events")
+        isto.Draw()
 
-       ll = isto[k].GetXaxis().FindBin(EnCutLowBG)
-       hh = isto[k].GetXaxis().FindBin(EnCutHighBG)
+        ll = isto.GetXaxis().FindBin(EnCutLowBG)
+        hh = isto.GetXaxis().FindBin(EnCutHighBG)
+
+        line = TLine()
+        line.SetLineColor(TColor.kRed)
+        line.DrawLine(ll,isto.GetMinimum(),ll,isto.GetMaximum())
+        line.DrawLine(hh,isto.GetMinimum(),hh,isto.GetMaximum())
+
+#        gPad.Update()
    
-       content = isto[k].Integral(ll, hh)
-       print ("The integral of the normalization histogram is:", content[k]) 
+        normoff[k] = isto.Integral(ll, hh)
+        print ("The integral from ",ll," to ",hh," of the normalization histogram is:", normoff[k]) 
 
-#    for ebin in range (0, NumBckgEnBins):
-#       off_en_center [ebin] = TMath.Sqrt(off_en_edges [ebin+1]*off_en_edges [ebin])
-##      off_en_center[ebin] = (off_en_edges[ebin+1]+off_en_edges[ebin])/2.
-#       log_off_en_center [ebin] = TMath.Log( off_en_center [ebin])
-        
-#       for k in range (0, 2):    #k in range 0,2 ???
-##            if k < NumSubSamples:
-#               hOffHeight[k] = ROOT.TH1F(ROOT.Form("hOffHeight_%s" % SampleName[k]), ROOT.Form("Background Level_%s" % SampleName[k]), NumBckgEnBins, off_en_edges)
-##            else:
-##              hOffHeight[k] = ROOT.TH1F("hOffHeight", "Background Level", NumBckgEnBins, off_en_edges)
+        latex = TLatex()
+        latex.DrawLatex(ll,isto.GetMaximum()/2,"The integral of the normalization histogram is: {}".format(normoff[k]))
 
-##            if k < NumSubSamples:
-##               hOnHeight[k] = ROOT.TH1F(ROOT.Form("hOnHeight_%s" % SampleName[k]), ROOT.Form("Signal Level_%s" % SampleName[k]), NumBckgEnBins, off_en_edges)
-##            else:
-##               hOnHeight[k] = ROOT.TH1F("hOnHeight", "Signal Level", NumBckgEnBins, off_en_edges)
-
+        gramma.Write()
+        f.Close()
     return;
-
     
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def interpolate(plot=False):
 
-    DoHisto06 = TFile.Open(OffDir06, "READ")
-    noff = DoHisto06.Get("fOffSample")
+def get_OffPdf(energy,nsample):
+    return math.exp(inter_func[nsample](math.log(energy)))
 
-    global ene
-    global numtot
+def off_normalization(plot=False):
+
+    global normoff
+
+    for k in range (0,numsamples):
+
+        normoff[k], errk = quad(get_OffPdf, config.energy_cut,config.energy_upper_cut, args=(k,)) 
+        print ('Background Norm sample=',k,' is: ',normoff[k], ' +- ',errk)
+
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+
+def test_sum(k):
+
+    global numtotoff
+    global log_ene_off
     global inter_func
 
-    NumBckgEnBins = 40
-    EnCutHighBG = 1.15*energy_upper_cut  
-    EnCutLowBG =  0.85*energy_cut
-    off_en_edges = [] 
-    off_en_center = []
-    log_off_en_center = []
-    bin_off_en_center = []
-    y_log_off_en_center = []    
-    binsize = TMath.Log(EnCutHighBG/EnCutLowBG)/NumBckgEnBins    
-
-    for ebin in range (0, NumBckgEnBins + 1):
-       off_en_edges.append(EnCutLowBG * TMath.Exp(binsize * ebin))
-
-    offbins = array('d',off_en_edges)   
-    isto = ROOT.TH1F("interpolation", "interpolation", NumBckgEnBins, offbins)
-
-    num = 0
-
-    for i in range (0, numtot):
-       noff.GetEntry(i)
-       energy = noff.GetArgs()[0]
-       isto.Fill(energy)
-       if (energy < energy_cut):
-           continue
-       if (energy > energy_upper_cut):
-           continue
-           
-       ene[num] = math.log(energy)
-       num += 1
-
-    numtot = num
-    ene = np.resize(ene,num)
-
-    print ('The number of off entries (after energy cuts) is:', num)
-    print (ene)
-    print ('The sum of ', np.sum(ene))
-
-    ebin_cnt = 0
-    for ebin in range (0, NumBckgEnBins):
-       off_en_center.append(TMath.Sqrt(off_en_edges[ebin+1]*off_en_edges[ebin]))
-       bin = isto.GetXaxis().FindBin(off_en_center[ebin])
-       bin_off_en_center.append(bin)
-
-       bin_content = isto.GetBinContent(bin)
-       if (bin_content < 1.):
-           continue
-
-       log_off_en_center.append(TMath.Log(off_en_center[ebin]))
-       y_log_off_en_center.append(TMath.Log(bin_content))
-       print ('ebin: ',ebin,' log_off_center: ',log_off_en_center[ebin_cnt], ' content: ',y_log_off_en_center[ebin_cnt], 'bin= ',bin_content)
-       ebin_cnt += 1
-
-    inter_func = interp1d(log_off_en_center, y_log_off_en_center, kind='linear')    #inter_func = interp1d(x, y, kind='linear') 
-
-#    print (np.sum(inter_func(ene)))
-
-    summ = 0.
-    for i in range (0,num):
+    summ  = 0.
+    for i in range (0,numtotoff[k]):
         if (np.isinf(summ)):
-            print ('i=',i-1,'e=',ene[i-1],'v=',inter_func(ene[i-1]))
+            print ('i=',i-1,'e=',log_ene_off[k][i-1],'v=',inter_func(log_ene_off[k][i-1]))
             break
         else:
-            summ += inter_func(ene[i])
+            summ += inter_func[k](log_ene_off[k][i])
+            
+    return summ
 
-    print ('found sum: ', summ)
+def create_off_interpolations(OffDir,plot=False):
+
+    global log_ene_off
+    global numtotoff
+    global inter_func
+
+    off_en_edges = [] 
+    off_en_center = []
+    log_off_en_center   = np.empty(shape=(numsamples,config.NumBckgEnBins),dtype='double')
+    y_log_off_en_center = np.empty(shape=(numsamples,config.NumBckgEnBins),dtype='double')
+
+    binsize = math.log(config.EnCutHighBG/config.EnCutLowBG)/config.NumBckgEnBins    
+
+    for ebin in range (0, config.NumBckgEnBins + 1):
+       off_en_edges.append(config.EnCutLowBG * math.exp(binsize * ebin))
+
+    for ebin in range (0, config.NumBckgEnBins):
+        off_en_center.append(math.sqrt(off_en_edges[ebin+1]*off_en_edges[ebin]))
+
+    # create here offbins with the (larger) background limits
+    offbins = array('d',off_en_edges)   
+
+    for k in range (0,numsamples):
+
+        print("\n\n--- INITIALIZING VALUES from:", OffDir[k], "\n")
+        DoHisto = TFile.Open(OffDir[k], "READ")
+        print(DoHisto)
+
+        log_ene_off.append(np.empty(shape=(config.EvtMaxOff),dtype='double'))  # array of log(energies) from all OFF events
+        noff = np.array([ DoHisto.Get("fOffSample") ])
+        numtotoff[k] = noff[0].GetEntries()
+        print("The total number of entries in the normalization histogram is:", numtotoff[k])    
+        
+        isto = ROOT.TH1F("interpolation", "interpolation", config.NumBckgEnBins, offbins)
+
+        num = 0
+        norm = 0.
+
+        for i in range (0, numtotoff[k]):
+            noff[0].GetEntry(i)
+            energy = noff[0].GetArgs()[0]
+            isto.Fill(energy)
+
+            if (not pass_energy_cuts(energy)):
+                continue               
+
+            log_ene_off[k][num] = math.log(energy)
+            num += 1
+
+        numtotoff[k] = num
+        log_ene_off[k] = np.resize(log_ene_off[k],num)
+
+        print ('The number of off entries (after energy cuts) is:', num)
+        print (log_ene_off[k])
+        print ('The sum of ', np.sum(log_ene_off[k]))
+
+        ebin_cnt = 0
+        for ebin in range (0, config.NumBckgEnBins):
+            bin = isto.GetXaxis().FindBin(off_en_center[ebin])
+            bin_content = isto.GetBinContent(bin)
+            if (bin_content < 1.):
+                print ('ebin: ',ebin,' bin: ', bin, 'skipped because of zero entries')
+                continue
+
+            # calculate here the logarithm of dN/dE (which normalized will provide dP/dE)
+            log_off_en_center[k][ebin_cnt]   = math.log(off_en_center[ebin])
+            y_log_off_en_center[k][ebin_cnt] = math.log(bin_content / (off_en_edges[ebin+1]-off_en_edges[ebin]))
+            print ('ebin: ',ebin,' ebin_cnt=', ebin_cnt, ' log_off_center: ',log_off_en_center[k][ebin_cnt], ' content: ',y_log_off_en_center[k][ebin_cnt], 'bin= ',bin, ' content=', bin_content)
+            ebin_cnt += 1
+
+        inter_func.append(interp1d(log_off_en_center[k], y_log_off_en_center[k], kind='linear'))    #inter_func = interp1d(x, y, kind='linear') 
+        print(math.exp(inter_func[k](math.log(90))))
+
+        print ('found sum: ',np.sum(inter_func[k](log_ene_off[k])))
     
-    if plot:
-        xnew = np.linspace(TMath.Log(80), TMath.Log(7000), num=200, endpoint=True)
-        plt.plot(log_off_en_center, y_log_off_en_center, 'o', xnew, inter_func(xnew), '-')
-        plt.xlabel('Log Eest')
-        plt.ylabel('Log events')
-        plt.legend(['data', 'linear'], loc='best')
-        plt.show()
-        plt.savefig('interpolation.png')
+        if plot:
+            xnew = np.linspace(TMath.Log(config.energy_cut), TMath.Log(config.energy_upper_cut), num=200, endpoint=True)
+            plt.plot(log_off_en_center[k], y_log_off_en_center[k], 'o', xnew, inter_func[k](xnew), '-')
+            plt.xlabel('Log Eest')
+            plt.ylabel('Log events')
+            plt.legend(['data', 'linear'], loc='best')
+            plt.show()
+            plt.savefig('interpolation_{}.png'.format(k))
     
         
 #       for k in range (0, 2):    #k in range 0,2 ???
 ##            if k < NumSubSamples:
-#               hOffHeight[k] = ROOT.TH1F(ROOT.Form("hOffHeight_%s" % SampleName[k]), ROOT.Form("Background Level_%s" % SampleName[k]), NumBckgEnBins, off_en_edges)
+#               hOffHeight[k] = ROOT.TH1F(ROOT.Form("hOffHeight_%s" % SampleName[k]), ROOT.Form("Background Level_%s" % SampleName[k]), config.NumBckgEnBins, off_en_edges)
 ##            else:
-##              hOffHeight[k] = ROOT.TH1F("hOffHeight", "Background Level", NumBckgEnBins, off_en_edges)
+##              hOffHeight[k] = ROOT.TH1F("hOffHeight", "Background Level", config.NumBckgEnBins, off_en_edges)
 
 ##            if k < NumSubSamples:
-##               hOnHeight[k] = ROOT.TH1F(ROOT.Form("hOnHeight_%s" % SampleName[k]), ROOT.Form("Signal Level_%s" % SampleName[k]), NumBckgEnBins, off_en_edges)
+##               hOnHeight[k] = ROOT.TH1F(ROOT.Form("hOnHeight_%s" % SampleName[k]), ROOT.Form("Signal Level_%s" % SampleName[k]), config.NumBckgEnBins, off_en_edges)
 ##            else:
-##               hOnHeight[k] = ROOT.TH1F("hOnHeight", "Signal Level", NumBckgEnBins, off_en_edges)
+##               hOnHeight[k] = ROOT.TH1F("hOnHeight", "Signal Level", config.NumBckgEnBins, off_en_edges)
     return;  
 
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def minim():
-    mini = sp.optimize.minimize(log_like, 10000, method='Powell') 
+def minim(k):
 
-    mu_est = mini.x
-    y_0 = log_like(mu_est)
+    mini = sp.optimize.minimize(log_like, 10000, args=(k),method='Powell') 
+
+    b_est = mini.x
+    y_0 = log_like(b_est,k)
  
-    print ('mu_0: ',mu_est,'y_0: ', y_0)
+    print ('b_0: ',b_est,'y_0: ', y_0)
 
-    root_fn = lambda mu: log_like(mu) - y_0 - 4.0
+    sigma = 2
 
-    mu_low  = sp.optimize.brentq(root_fn, 1., mu_est)
-    mu_high = sp.optimize.brentq(root_fn, mu_est, 1e10)
+    root_fn = lambda b: log_like(b,k) - y_0 - 2*sigma
 
-    return mini,mu_low,mu_high;   
+    b_low  = sp.optimize.brentq(root_fn, 1., b_est)
+    b_high = sp.optimize.brentq(root_fn, b_est, 1e10)
+
+    return b_est,b_low,b_high;   
 
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def log_like(mu):
+def log_like(b_k,k):
 #    summa = np.float128(0.)
 
-    if (mu < 0.):
+    if (b_k < 0.):
         return 999999999.
 
-
-    summa = np.sum(inter_func(ene))
-    y = -2.* (summa + numtot*math.log(mu) - mu)
-    print ('mu: ',mu, 'y: ',y)
+    summa = np.sum(inter_func[k](log_ene_off[k]))
+    y = -2.* (summa + numtotoff[k]*math.log(b_k) - b_k)
+    print ('b_k: ',b_k, 'y: ',y)
     return y; 
 
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-isto()
-interpolate()
-y = minim()
-print (y)
+#isto()
+#interpolate()
+#y = minim()
+#print (y)

@@ -7,10 +7,14 @@ import ROOT
 from ROOT import TFile, TObject, TH1, TAxis, TArrayD
 from pathlib import Path
 import config
+import math
 import numpy as np
 from scipy.interpolate import interp1d
 
 inter_mass = []
+real_masses= np.empty(0)
+E_lowlims  = []
+E_uplims   = []
 
 masses = [ 100., 110., 120., 130., 140., 150., 160., 180.,
            200., 220., 240., 260., 280.,
@@ -25,8 +29,10 @@ masses = [ 100., 110., 120., 130., 140., 150., 160., 180.,
            3000., 4000., 5000., 6000., 7000., 8000., 9000.,
            10000.,12000., 15000., 20000., 30000., 50000., 100000. ]
            
-
 def get_mass_histogram(directory,mass,channel):
+
+    global E_lowlims
+    global E_uplims
 
     file = directory + "/dNdESignal_" + channel + "_" + str(int(mass)) + ".0mass.root"
     print ("Looking for file: ",file)
@@ -40,7 +46,10 @@ def get_mass_histogram(directory,mass,channel):
     print(DoHisto)  
     
     histogram = DoHisto.Get("hdNdE")
-    print (histogram)
+    histogram.SetXTitle("log_{10}(E' [GeV])");
+    histogram.SetYTitle("dN/dE' [GeV^{-1}]");
+
+    #    print (histogram)
 
     bins = histogram.GetNbinsX()
 
@@ -51,6 +60,9 @@ def get_mass_histogram(directory,mass,channel):
         model_E[ebin] = histogram.GetXaxis().GetBinCenter(ebin+1)
         model_N[ebin] = histogram.GetBinContent(ebin+1)
 
+    E_lowlims.append(math.pow(10.,histogram.GetXaxis().GetBinCenter(1)))
+    E_uplims.append(math.pow(10.,histogram.GetXaxis().GetBinCenter(bins)))
+
     return interp1d(model_E,model_N, kind=config.ModelInterpolation)
 
 
@@ -60,10 +72,14 @@ def get_mass_interpolations(directory, masses, channel):
 
     for mass in masses:
         inter_mass.append(get_mass_histogram(directory,mass,channel))
+                
 
 def get_masses(mass_dir,channel,mmin,mmax):
 
     global inter_mass
+    global real_masses
+    global E_lowlims
+    global E_uplims
 
     nmasses = len(masses)
     print (nmasses)
@@ -82,6 +98,6 @@ def get_masses(mass_dir,channel,mmin,mmax):
 
     real_masses = np.resize(real_masses,reali)
 
-    get_mass_interpolations(mass_dir, real_masses, channel)
+    get_mass_interpolations(mass_dir, real_masses,channel)
 
-    return inter_mass
+    return inter_mass, real_masses

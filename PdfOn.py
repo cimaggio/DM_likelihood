@@ -21,6 +21,7 @@ from ROOT import TString, TFile, TObject, TH1, TMath, TNtuple, TCanvas
 from array import array
 #from ROOT import *   (this command line does not work in a script)
 
+
 # all global parameters here
 content = 0
 ene_on = []
@@ -69,10 +70,10 @@ AeffEnMax = []
 
 #-----------------------------------------------------------------------------------------------------------------------------------------
 
-def OnInit(PrelimPath,OnDir,EffOnTime):
+def OnInit(PrelimPath,OnDir):
 
 #    NumBckgEnBins = 40
-    print("\n\n--- INITIALIZING VALUES from:", PrelimPath, " eff. on time: ", EffOnTime[0], "\n")
+    print("\n\n--- INITIALIZING VALUES from:", PrelimPath, "\n")
 
     # TFile *LivParamFile  = TFile.Open(PrelimPath, "READ")
     LivParamFile2 = TFile.Open(PrelimPath, "READ")
@@ -200,11 +201,32 @@ def OnInit(PrelimPath,OnDir,EffOnTime):
 #        sigma2[k] = inter_sigma2[k](ene_on[k])*ene_on[k]
 #        part[k]   = inter_part[k](ene_on[k])
 
-        integrand.append(np.empty(shape=(num,config.BinsIntegrand),dtype=config.ArrayDataType))
 
-        pbar = tqdm(total=num*config.BinsIntegrand)
 
-        for i in range (0, num):
+def integrand_init(interp,mass,Elow,Eup):
+
+    print("\n\n--- INITIALIZING MASS:", mass, " Low Limit ", Elow,  "  , Up Lim: ",Eup,"\n")
+
+    global inter_mean1
+    global inter_mean2
+    global inter_sigma1
+    global inter_sigma2
+    global inter_part
+
+    global ene_on
+    global integrand
+    global normon
+    global numtoton
+
+    #    integrand = []
+
+    for k in range (0, config.nsamples):    # k= number of samples
+
+        integrand.append(np.empty(shape=(numtoton[k],config.BinsIntegrand),dtype=config.ArrayDataType))
+    
+        pbar = tqdm(total=numtoton[k]*config.BinsIntegrand)
+    
+        for i in range (0, numtoton[k]):
 
             energy = ene_on[k][i]
 
@@ -230,10 +252,13 @@ def OnInit(PrelimPath,OnDir,EffOnTime):
                 pbar.update(1)
 
                 area = get_area(entrue,k)
-                flux = get_phi(entrue)
+
+                flux = 0.
+                if (Elow < entrue < Eup):
+                    flux = get_phi(entrue, interp,mass)
                 enmig = part*gaussian(entrue,mean1,sigma1)+(1.-part)*gaussian(entrue,mean2,sigma2)
             
-                integrand[k][i][j] = flux * area * enmig * EffOnTime[k] * binwidth
+                integrand[k][i][j] = flux * area * enmig * binwidth
 
         pbar.close()
 
@@ -273,10 +298,12 @@ def OnInit(PrelimPath,OnDir,EffOnTime):
                 pbar.update(1)
 
                 area = get_area(entrue,k)
-                flux = get_phi(entrue)
+                flux = 0.
+                if ((Elow < entrue) and (entrue < Eup)):
+                    flux = get_phi(entrue, interp,mass)
                 enmig = part*gaussian(entrue,mean1,sigma1)+(1.-part)*gaussian(entrue,mean2,sigma2)
             
-                integrand_norm[k][ebin][j] = flux * area * enmig * (on_en_edges[ebin+1]-on_en_edges[ebin]) * EffOnTime[k] 
+                integrand_norm[k][ebin][j] = flux * area * enmig * (on_en_edges[ebin+1]-on_en_edges[ebin])  
 
         normon[k] = np.sum(integrand_norm[k])
         
@@ -296,9 +323,20 @@ def gaussian(x, mu, sigma):
           return 1./sigma/math.sqrt(2*math.pi)*np.exp(-0.5*np.power((x - mu)/sigma, 2.))
 
 
-def get_phi(entrue):
+def get_phi(entrue,inter_mass,mass):
 
-    return config.Phi * (entrue**-5)
+    # because Cirelli's hists seem to show in reality dN/d(log10 E) vs. log10(E)
+    dNdE = inter_mass(math.log10(entrue)) * entrue
+
+    #    print ('entrue=',entrue,' dNdE=',dNdE,'\n')
+
+    facc = config.Jfactor * dNdE / 4. / math.pi
+    if (config.Mode == 'ann'):
+        facc = facc * config.refsv / 2. / mass / mass
+    if (config.Mode == 'dec'):
+        facc = facc * config.tauDMm1 / mass
+
+    return facc
  
 def get_area(entrue,k):
 
